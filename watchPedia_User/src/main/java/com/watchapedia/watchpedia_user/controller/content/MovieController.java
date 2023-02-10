@@ -1,5 +1,10 @@
 package com.watchapedia.watchpedia_user.controller.content;
 
+import com.watchapedia.watchpedia_user.model.dto.UserSessionDto;
+import com.watchapedia.watchpedia_user.model.dto.comment.CommentDto;
+import com.watchapedia.watchpedia_user.model.dto.content.MovieDto;
+import com.watchapedia.watchpedia_user.model.dto.content.TvDto;
+import com.watchapedia.watchpedia_user.model.entity.comment.Comment;
 import com.watchapedia.watchpedia_user.model.entity.content.ajax.Star;
 import com.watchapedia.watchpedia_user.model.entity.User;
 import com.watchapedia.watchpedia_user.model.network.response.*;
@@ -8,6 +13,7 @@ import com.watchapedia.watchpedia_user.model.network.response.content.MovieRespo
 import com.watchapedia.watchpedia_user.model.network.response.content.StarResponse;
 import com.watchapedia.watchpedia_user.model.repository.comment.CommentRepository;
 import com.watchapedia.watchpedia_user.model.repository.UserRepository;
+import com.watchapedia.watchpedia_user.model.repository.comment.SpoilerRepository;
 import com.watchapedia.watchpedia_user.service.*;
 import com.watchapedia.watchpedia_user.service.comment.CommentService;
 import com.watchapedia.watchpedia_user.service.content.ajax.HateService;
@@ -15,6 +21,7 @@ import com.watchapedia.watchpedia_user.service.content.ajax.StarService;
 import com.watchapedia.watchpedia_user.service.content.ajax.WatchService;
 import com.watchapedia.watchpedia_user.service.content.ajax.WishService;
 import com.watchapedia.watchpedia_user.service.content.MovieService;
+import jakarta.servlet.http.HttpSession;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -43,24 +50,48 @@ public class MovieController {
     private final HateService hateService;
 
     private final CommentService commentService;
+    private final SpoilerRepository spoilerRepository;
+
+
 
     @GetMapping(path="/main")
-    public String movie(ModelMap map){
-        map.addAttribute("movies", movieService.searchMovies());
-        return "movie/movieMain";
+    public String movie(
+            ModelMap map,HttpSession session
+
+    ){
+        UserSessionDto userSessionDto = (UserSessionDto) session.getAttribute("userSession");
+        map.addAttribute("userSession", userSessionDto);
+        List<MovieDto> movies = movieService.movies();
+        map.addAttribute("movies", movies);
+        System.out.println(movies);
+
+
+        map.addAttribute("movies", movieService.movies());
+        map.addAttribute("movieDtos", movieService.movieDtos());
+        map.addAttribute("movies2", movieService.movies2("나 홀로"));
+        map.addAttribute("Irons", movieService.Irons("아이언"));
+        map.addAttribute("movies3", movieService.movies3("2023"));
+        map.addAttribute("koreanMovies", movieService.searchCountry("한국"));
+        map.addAttribute("americanMovies", movieService.searchCountry("미국"));
+        map.addAttribute("dramas", movieService.searchDrama("드라마"));
+        map.addAttribute("cris", movieService.searchCri("범죄"));
+        return "/movie/movieMain";
     }
+
+
+
 
 
     @GetMapping("/{movieIdx}") // http://localhost:8080/movie/1
     public String movieDetail(
             @PathVariable Long movieIdx,
             @PageableDefault(size = 5, sort = "commIdx", direction = Sort.Direction.DESC) Pageable pageable,
-            ModelMap map
+            ModelMap map,
+            HttpSession session
     ){
-        Long userIdx = 12L;
+        UserSessionDto dto = (UserSessionDto) session.getAttribute("userSession");
 
         MovieResponse movie = movieService.movieView(movieIdx);
-
 //      평균 별점
         double sum = 0;
         double avgStar = 0;
@@ -73,9 +104,11 @@ public class MovieController {
             avgStar = Math.round((sum / movie.starList().size()) * 10.0) / 10.0;
         }
 
+        StarResponse hasStar = null;
+        if(dto!=null) {
 //        해당 유저가 별점을 매겼는지
-        StarResponse hasStar = starService.findStar("movie",movie.idx(), userIdx);
-
+            hasStar = starService.findStar("movie", movie.idx(), dto.userIdx());
+        }
 //        인물 리스트
         List<String> peopleList = new ArrayList<>();
 
@@ -93,18 +126,25 @@ public class MovieController {
             System.out.println("** 인물정보가 없습니다 **");
         }
 
-        Page<CommentResponse> commentList = commentService.commentList("movie",movie.idx(),userIdx,pageable);
-//      해당 유저가 코멘트를 달았는지
+        //      해당 유저가 코멘트를 달았는지
         CommentResponse hasComm = null;
-        for(CommentResponse comm: commentList){
-            if(comm.user().getUserIdx() == userIdx){
-                hasComm = comm;
+        boolean hasWish = false;
+        boolean hasWatch = false;
+        boolean hasHate = false;
+        Page<CommentResponse> commentList = commentService.commentList("movie", movie.idx(), dto!=null?dto.userIdx():null, pageable);
+        if(dto != null) {
+            Comment comment = commentRepository.findByCommContentTypeAndCommContentIdxAndCommUserIdx(
+                    "movie", movie.idx(), userRepository.getReferenceById(dto.userIdx())
+            );
+            if(comment != null){
+                hasComm = CommentResponse.from(CommentDto.from(comment),spoilerRepository.findBySpoCommentIdx(comment.getCommIdx())!=null?true:false,
+                        0,0L,false);
             }
-        };
 
-        boolean hasWish = wishService.findWish("movie",movie.idx(),userIdx);
-        boolean hasWatch = watchService.findWatch("movie",movie.idx(),userIdx);
-        boolean hasHate = hateService.findHate(userIdx,"movie",movie.idx());
+            hasWish = wishService.findWish("movie",movie.idx(),dto.userIdx());
+            hasWatch = watchService.findWatch("movie",movie.idx(),dto.userIdx());
+            hasHate = hateService.findHate(dto.userIdx(),"movie",movie.idx());
+        }
 
 //        별점 그래프
         HashMap<Long, Integer> starGraph = new HashMap<Long,Integer>(){{
@@ -136,7 +176,7 @@ public class MovieController {
         map.addAttribute("hasHate", hasHate);
         map.addAttribute("graph", starGraph);
         map.addAttribute("bigStar", bigStar);
-        map.addAttribute("userIdx", userIdx);
+        map.addAttribute("userSession", dto);
         map.addAttribute("similarGenre", similarGenre);
         return "/movie/movieDetail";
     }
@@ -144,27 +184,31 @@ public class MovieController {
     @GetMapping("/{movieIdx}/info")
     public String movieInfo(
             @PathVariable Long movieIdx,
-            ModelMap map
+            ModelMap map,
+            HttpSession session
     ){
+        UserSessionDto dto = (UserSessionDto) session.getAttribute("userSession");
         MovieResponse movie = movieService.movieView(movieIdx);
 
         map.addAttribute("movie", movie);
+        map.addAttribute("userSession", dto);
         return "/movie/detailInfo";
     }
 
     @GetMapping("/{movieIdx}/gallery")
     public String movieGallery(
             @PathVariable Long movieIdx,
-            ModelMap map
+            ModelMap map,
+            HttpSession session
     ){
-        Long userIdx = 12L;
+        UserSessionDto dto = (UserSessionDto) session.getAttribute("userSession");
         MovieResponse movie = movieService.movieView(movieIdx);
         List<String> gallery = Arrays.stream(movie.gallery().split("[|]")).toList();
         String title = movie.title();
 
         map.addAttribute("gallery", gallery);
         map.addAttribute("title", title);
-        map.addAttribute("userIdx", userIdx);
+        map.addAttribute("userSession", dto);
         return "/gallery";
     }
 

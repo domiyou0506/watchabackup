@@ -1,19 +1,28 @@
 package com.watchapedia.watchpedia_user.controller.content;
 
+import com.watchapedia.watchpedia_user.model.dto.UserSessionDto;
+import com.watchapedia.watchpedia_user.model.dto.comment.CommentDto;
+import com.watchapedia.watchpedia_user.model.dto.content.MovieDto;
+import com.watchapedia.watchpedia_user.model.dto.content.TvDto;
+import com.watchapedia.watchpedia_user.model.entity.comment.Comment;
 import com.watchapedia.watchpedia_user.model.entity.content.ajax.Star;
-import com.watchapedia.watchpedia_user.model.network.response.PersonResponse;
+import com.watchapedia.watchpedia_user.model.network.response.*;
 import com.watchapedia.watchpedia_user.model.network.response.comment.CommentResponse;
+import com.watchapedia.watchpedia_user.model.network.response.content.MovieResponse;
 import com.watchapedia.watchpedia_user.model.network.response.content.StarResponse;
 import com.watchapedia.watchpedia_user.model.network.response.content.TvResponse;
-import com.watchapedia.watchpedia_user.model.repository.UserRepository;
 import com.watchapedia.watchpedia_user.model.repository.comment.CommentRepository;
-import com.watchapedia.watchpedia_user.service.PersonService;
+import com.watchapedia.watchpedia_user.model.repository.UserRepository;
+import com.watchapedia.watchpedia_user.model.repository.comment.SpoilerRepository;
+import com.watchapedia.watchpedia_user.service.*;
 import com.watchapedia.watchpedia_user.service.comment.CommentService;
 import com.watchapedia.watchpedia_user.service.content.TvService;
 import com.watchapedia.watchpedia_user.service.content.ajax.HateService;
 import com.watchapedia.watchpedia_user.service.content.ajax.StarService;
 import com.watchapedia.watchpedia_user.service.content.ajax.WatchService;
 import com.watchapedia.watchpedia_user.service.content.ajax.WishService;
+import com.watchapedia.watchpedia_user.service.content.MovieService;
+import jakarta.servlet.http.HttpSession;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,9 +30,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.ModelMap;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,11 +51,17 @@ public class TvController {
     private final HateService hateService;
 
     private final CommentService commentService;
+    private final SpoilerRepository spoilerRepository;
 
     @GetMapping(path="/main")
-    public String movie(ModelMap map){
-        map.addAttribute("tvs", tvService.searchTvs());
-        return "tv/tvMain";
+    public String tv(
+            ModelMap map,HttpSession session
+    ){
+        UserSessionDto userSessionDto = (UserSessionDto) session.getAttribute("userSession");
+        map.addAttribute("userSession", userSessionDto);
+        List<TvDto> tvs = tvService.tvs();
+        map.addAttribute("tvs", tvs);
+        return "/tv/tvMain";
     }
 
 
@@ -56,67 +69,80 @@ public class TvController {
     public String tvDetail(
             @PathVariable Long tvIdx,
             @PageableDefault(size = 5, sort = "commIdx", direction = Sort.Direction.DESC) Pageable pageable,
-            ModelMap map
-    ){
-        Long userIdx = 12L;
+            ModelMap map,
+            HttpSession session
+    ) {
+        UserSessionDto dto = (UserSessionDto) session.getAttribute("userSession");
 
         TvResponse tv = tvService.tvView(tvIdx);
 
 //      평균 별점
         double sum = 0;
         double avgStar = 0;
-        if(tv.starList().size() == 1){
+        if (tv.starList().size() == 1) {
             avgStar = tv.starList().get(0).getStarPoint();
-        }else if(tv.starList().size() > 0){
-            for(int i=0; i<tv.starList().size(); i++){
+        } else if (tv.starList().size() > 0) {
+            for (int i = 0; i < tv.starList().size(); i++) {
                 sum += tv.starList().get(i).getStarPoint();
             }
             avgStar = Math.round((sum / tv.starList().size()) * 10.0) / 10.0;
         }
 
+        StarResponse hasStar = null;
+        if (dto != null) {
 //        해당 유저가 별점을 매겼는지
-        StarResponse hasStar = starService.findStar("tv",tv.idx(), userIdx);
+            hasStar = starService.findStar("tv", tv.idx(), dto.userIdx());
+        }
 
 //        인물 리스트
         List<String> peopleList = new ArrayList<>();
 
         List<String> people = new ArrayList<>();
         List<PersonResponse> personList = new ArrayList<>();
-        if(tv.people() != null){
+        if (tv.people() != null) {
             peopleList = List.of(tv.people().split(","));
-            for(String per : peopleList){
+            for (String per : peopleList) {
                 people.add(per.split("\\(")[0] + "," + per.split("\\(")[1].split("\\)")[0]);
             }
         }
-        try{
+        try {
             personList = personService.personList(people);
-        }catch (Exception e){
+        } catch (Exception e) {
             System.out.println("** 인물정보가 없습니다 **");
         }
 
-        Page<CommentResponse> commentList = commentService.commentList("tv",tv.idx(),userIdx,pageable);
-//      해당 유저가 코멘트를 달았는지
         CommentResponse hasComm = null;
-        for(CommentResponse comm: commentList){
-            if(comm.user().getUserIdx() == userIdx){
-                hasComm = comm;
+        boolean hasWish = false;
+        boolean hasWatch = false;
+        boolean hasHate = false;
+        Page<CommentResponse> commentList = commentService.commentList("tv", tv.idx(), dto != null ? dto.userIdx() : null, pageable);
+        if (dto != null) {
+            Comment comment = commentRepository.findByCommContentTypeAndCommContentIdxAndCommUserIdx(
+                    "tv", tv.idx(), userRepository.getReferenceById(dto.userIdx())
+            );
+            if(comment != null){
+                hasComm = CommentResponse.from(CommentDto.from(comment),spoilerRepository.findBySpoCommentIdx(comment.getCommIdx())!=null?true:false,
+                        0,0L,false);
             }
-        };
 
-        boolean hasWish = wishService.findWish("tv",tv.idx(),userIdx);
-        boolean hasWatch = watchService.findWatch("tv",tv.idx(),userIdx);
-        boolean hasHate = hateService.findHate(userIdx,"tv",tv.idx());
-
+            hasWish = wishService.findWish("tv", tv.idx(), dto.userIdx());
+            hasWatch = watchService.findWatch("tv", tv.idx(), dto.userIdx());
+            hasHate = hateService.findHate(dto.userIdx(), "tv", tv.idx());
+        }
 //        별점 그래프
-        HashMap<Long, Integer> starGraph = new HashMap<Long,Integer>(){{
-            put(1L,0);put(2L,0);put(3L,0);put(4L,0);put(5L,0);
+        HashMap<Long, Integer> starGraph = new HashMap<Long, Integer>() {{
+            put(1L, 0);
+            put(2L, 0);
+            put(3L, 0);
+            put(4L, 0);
+            put(5L, 0);
         }};
-        if(tv.starList().size() > 0){
+        if (tv.starList().size() > 0) {
             int graphPx = 88 / tv.starList().size();
-            for(Star star : tv.starList()){
-                for(Long i=1L; i<=5L; i++){
-                    if(star.getStarPoint() == i){
-                        starGraph.put(i,starGraph.get(i) + graphPx);
+            for (Star star : tv.starList()) {
+                for (Long i = 1L; i <= 5L; i++) {
+                    if (star.getStarPoint() == i) {
+                        starGraph.put(i, starGraph.get(i) + graphPx);
                     }
                 }
             }
@@ -137,36 +163,40 @@ public class TvController {
         map.addAttribute("hasHate", hasHate);
         map.addAttribute("graph", starGraph);
         map.addAttribute("bigStar", bigStar);
-        map.addAttribute("userIdx", userIdx);
+        map.addAttribute("userSession", dto);
         map.addAttribute("similarGenre", similarGenre);
         return "/tv/tvDetail";
     }
-
     @GetMapping("/{tvIdx}/info")
     public String tvInfo(
             @PathVariable Long tvIdx,
-            ModelMap map
+            ModelMap map,
+            HttpSession session
     ){
+        UserSessionDto dto = (UserSessionDto) session.getAttribute("userSession");
         TvResponse tv = tvService.tvView(tvIdx);
 
         map.addAttribute("tv", tv);
+        map.addAttribute("userSession", dto);
         return "/tv/detailInfoTv";
     }
 
     @GetMapping("/{tvIdx}/gallery")
     public String tvGallery(
             @PathVariable Long tvIdx,
-            ModelMap map
+            ModelMap map,
+            HttpSession session
     ){
-        Long userIdx = 12L;
+        UserSessionDto dto = (UserSessionDto) session.getAttribute("userSession");
         TvResponse tv = tvService.tvView(tvIdx);
         List<String> gallery = Arrays.stream(tv.gallery().split("[|]")).toList();
         String title = tv.title();
 
         map.addAttribute("gallery", gallery);
         map.addAttribute("title", title);
-        map.addAttribute("userIdx", userIdx);
+        map.addAttribute("userSession", dto);
         return "/gallery";
     }
+
 
 }
